@@ -1,125 +1,107 @@
-"""
-This script demonstrates how to create vector embeddings
-on custom data (PDFs) and build a Retrieval-based chatbot.
-
-Process: Load -> Split -> Store -> Retrieve -> Generate
-References:
-- https://python.langchain.com/docs/use_cases/question_answering/
-- https://python.langchain.com/docs/modules/chains/#legacy-chains
-"""
-
+import gradio as gr
 from pathlib import Path
 from langchain.chains import RetrievalQA
-from transformers import AutoTokenizer, pipeline
-from langchain.prompts import ChatPromptTemplate
-from langchain_community.vectorstores import Chroma
-from langchain_huggingface import HuggingFacePipeline, HuggingFaceEmbeddings
-from langchain.schema.output_parser import StrOutputParser
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_chroma import Chroma  # updated import to avoid LangChain deprecation
+from transformers import AutoTokenizer, pipeline, AutoModelForCausalLM
+from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline
 
 # -----------------------------
-# Define PDF file path
+# Define project directories
 # -----------------------------
-pdf_file_dir_path = str(
-    Path(__file__).resolve().parent.parent.parent.joinpath(r"./Book_Chatbot/data", "pdfs")
-)
-print(f"PDF Directory Path: {pdf_file_dir_path}")
+BASE_DIR = Path(__file__).resolve().parent.parent  # points to Book_Chatbot/
+PDF_DIR = BASE_DIR / "data" / "pdfs"
+BOOK_CACHE_DIR = BASE_DIR / "Book" / "sentence_transformers"
+MODELS_CACHE_DIR = BASE_DIR / "models"
+CHROMA_DB_DIR = BASE_DIR / "chroma_db"
+OFFLOAD_DIR = BASE_DIR / "offload"
 
 # -----------------------------
-# Split documents into smaller chunks
-# -----------------------------
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    chunk_overlap=200,
-    length_function=len,
-    is_separator_regex=False,
-)
-
-# -----------------------------
-# Load data from PDFs using PyPDFLoader
-# -----------------------------
-pdf_dir = Path(pdf_file_dir_path)
-loaders = [PyPDFLoader(str(pdf)) for pdf in pdf_dir.glob("*.pdf")]
-pages = []
-for l in loaders:
-    pages.extend(l.load_and_split(text_splitter=text_splitter))
-
-# -----------------------------
-# Generate embeddings
+# Load embeddings
 # -----------------------------
 embed_model = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2",
-    cache_folder=r"./Book/sentence_transformers",
-    model_kwargs={"device": "cpu"},  # set to "cuda" if GPU is available
+    model_kwargs={"device": "cpu"},  # use "cuda" if GPU is available
     encode_kwargs={"normalize_embeddings": False},
+    cache_folder=str(BOOK_CACHE_DIR),
     multi_process=False,
 )
 
 # -----------------------------
-# Store embeddings in Chroma
+# Load Chroma vector database
 # -----------------------------
-chroma_db = Chroma.from_documents(
-    pages, embed_model, persist_directory="./chroma_db"
+chroma_db = Chroma(
+    persist_directory=str(CHROMA_DB_DIR),
+    embedding_function=embed_model
 )
 
 # -----------------------------
 # Setup retriever
 # -----------------------------
 retriever = chroma_db.as_retriever(
-    search_type="mmr",  # Maximum Marginal Relevance
-    search_kwargs={"k": 8},  # max relevant docs to retrieve
+    search_type="mmr",
+    search_kwargs={"k": 2},  # reduce for faster response
 )
 
 # -----------------------------
-# Load Dolly (TinyLlama) model for Q&A
+# Load TinyLlama model
 # -----------------------------
-dolly_generate_text = pipeline(
-    model="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-    trust_remote_code=True,
-    device_map="auto",  # -1 for CPU, 0 for GPU
-    return_full_text=True,
-    tokenizer=AutoTokenizer.from_pretrained("TinyLlama/TinyLlama-1.1B-Chat-v1.0"),
-    temperature=0.1,
-    max_new_tokens=1000,
-    model_kwargs={
-        "cache_dir": "./models",
-        "offload_folder": "offload",  # use for large models >7B
-    },
+model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+tinyllama_pipeline = pipeline(
+    "text-generation",
+    model=AutoModelForCausalLM.from_pretrained(
+        model_id,
+        device_map="auto",   # CPU = -1, GPU = 0
+        dtype="auto",        # replaced deprecated torch_dtype
+        cache_dir=str(MODELS_CACHE_DIR),
+    ),
+    tokenizer=tokenizer,
+    max_new_tokens=256,     # smaller for faster inference
+    temperature=0.7,
+    do_sample=True,
 )
 
-dolly_pipeline_hf = HuggingFacePipeline(pipeline=dolly_generate_text)
+tinyllama_pipeline_hf = HuggingFacePipeline(pipeline=tinyllama_pipeline)
 
 # -----------------------------
-# Setup prompt and output parser
-# -----------------------------
-question_template = """
-Use the following pieces of context to answer the question at the end.
-If you don't know the answer, just say that you don't know, don't try to make up an answer.
-
-Question: {question}
-"""
-prompt_template = ChatPromptTemplate.from_template(question_template)
-output_parser = StrOutputParser()
-chain_1 = prompt_template | dolly_pipeline_hf | output_parser
-
-# Example: Direct question to Dolly model
-chain_1_ans = chain_1.invoke(
-    input={"question": "Provide NVIDIA’s outlook for the third quarter of fiscal 2024"}
-)
-print("Chain 1 Answer:\n", chain_1_ans)
-
-# -----------------------------
-# Create RetrievalQA for custom data
+# Setup RetrievalQA
 # -----------------------------
 retrievalQA = RetrievalQA.from_llm(
-    llm=dolly_pipeline_hf,
+    llm=tinyllama_pipeline_hf,
     retriever=retriever
 )
-print("RetrievalQA Setup:\n", retrievalQA)
 
-# Ask question using custom PDF data
-ans = retrievalQA.invoke(
-    "Provide NVIDIA’s outlook for the third quarter of fiscal 2024"
+# -----------------------------
+# Clean repeated lines in output
+# -----------------------------
+def clean_answer(ans: str) -> str:
+    lines = ans.split("\n")
+    seen = set()
+    cleaned = []
+    for line in lines:
+        line = line.strip()
+        if line and line not in seen:
+            cleaned.append(line)
+            seen.add(line)
+    return "\n".join(cleaned)
+
+# -----------------------------
+# Chatbot function
+# -----------------------------
+def chatbot(input_text: str) -> str:
+    ans = retrievalQA.invoke(input=input_text)
+    return clean_answer(ans["result"])
+
+# -----------------------------
+# Gradio interface
+# -----------------------------
+iface = gr.Interface(
+    fn=chatbot,
+    inputs=gr.Textbox(lines=7, label="Enter your text"),
+    outputs="text",
+    title="Information Retrieval Bot (TinyLlama)",
 )
-print("RetrievalQA Answer:\n", ans)
+
+if __name__ == "__main__":
+    iface.launch(share=True)
