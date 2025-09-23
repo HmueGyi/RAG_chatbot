@@ -8,3 +8,5 @@ gradio>=3.40.0
 torch>=2.1.0
 sentence-transformers
 accelerate
+pypdf
+
