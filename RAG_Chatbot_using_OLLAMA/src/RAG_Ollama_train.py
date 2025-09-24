@@ -1,22 +1,8 @@
 """
-High-accuracy RAG Chatbot:
-Load PDFs, text files, images, Word docs,
-create embeddings, store in Chroma DB,
-and query with TinyLlama (via Ollama).
-Source-aware and improved accuracy.
-"""
-"""
-This script demonstrates how to create vector embeddings
-on custom PDF data and build a Retrieval-based chatbot.
-
-Process: Load -> Split -> Deduplicate -> Store -> Retrieve -> Generate
-"""
-
-"""
 High-accuracy RAG Chatbot with Ollama:
 Load PDFs, text files, images, Word docs,
 create embeddings, store in Chroma DB,
-and query with Llama2 via Ollama.
+and query with Llama3.1 via Ollama.
 Source-aware and improved accuracy.
 """
 
@@ -32,141 +18,118 @@ from langchain_community.document_loaders import (
 )
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_ollama import ChatOllama, OllamaEmbeddings
-from langchain.docstore.document import Document
-import re
 
 # -----------------------------
-# Define base paths
+# Paths
 # -----------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
-PDF_DIR = BASE_DIR / "data" / "pdfs"
-TXT_DIR = BASE_DIR / "data" / "txts"
-IMG_DIR = BASE_DIR / "data" / "images"
-DOCX_DIR = BASE_DIR / "data" / "docs"
+DATA_DIRS = {
+    "pdf": BASE_DIR / "data" / "pdfs",
+    "txt": BASE_DIR / "data" / "txts",
+    "img": BASE_DIR / "data" / "images",
+    "docx": BASE_DIR / "data" / "docs",
+}
 CHROMA_DB_DIR = BASE_DIR / "chroma_db"
 
-print(f"Data directories: PDFs={PDF_DIR}, Texts={TXT_DIR}, Images={IMG_DIR}, Docs={DOCX_DIR}")
-
 # -----------------------------
-# Split documents into chunks
+# Text Splitter
 # -----------------------------
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    chunk_overlap=300,
+    chunk_size=1200,
+    chunk_overlap=100,
     length_function=len,
-    is_separator_regex=False,
 )
 
 # -----------------------------
-# Ollama embeddings (CPU-friendly)
+# Embeddings and LLM
 # -----------------------------
-embed_model = OllamaEmbeddings(model="llama2")
+embed_model = OllamaEmbeddings(model="nomic-embed-text")
+llm = ChatOllama(model="llama3.2", temperature=0.2, max_tokens=400)
 
 # -----------------------------
-# Load or create Chroma DB
+# Load or Create Chroma DB
 # -----------------------------
+def load_documents():
+    docs = []
+    for dtype, path in DATA_DIRS.items():
+        for file in path.glob("*.*"):
+            try:
+                if dtype == "pdf":
+                    loader = PyPDFLoader(str(file))
+                elif dtype == "txt":
+                    loader = TextLoader(str(file), encoding="utf-8")
+                elif dtype == "img":
+                    loader = UnstructuredImageLoader(str(file))
+                elif dtype == "docx":
+                    loader = UnstructuredWordDocumentLoader(str(file))
+                else:
+                    continue
+
+                file_docs = loader.load_and_split(text_splitter=text_splitter)
+                for d in file_docs:
+                    d.metadata["source_file"] = file.name
+                docs.extend(file_docs)
+            except Exception as e:
+                print(f"⚠️ Failed to load {dtype} {file.name}: {e}")
+    return docs
+
 if CHROMA_DB_DIR.exists() and any(CHROMA_DB_DIR.iterdir()):
     print("Loading existing Chroma DB...")
     chroma_db = Chroma(
         persist_directory=str(CHROMA_DB_DIR),
-        collection_name="document_collection",
+        collection_name="doc_collection",
         embedding_function=embed_model,
     )
 else:
-    pages = []
+    print("Creating new Chroma DB from documents...")
+    pages = load_documents()
+    print(f"Total chunks before deduplication: {len(pages)}")
 
-    # --- PDFs ---
-    for pdf_file in PDF_DIR.glob("*.pdf"):
-        loader = PyPDFLoader(str(pdf_file))
-        docs = loader.load_and_split(text_splitter=text_splitter)
-        for d in docs:
-            d.metadata["source_file"] = pdf_file.name
-        pages.extend(docs)
-
-    # --- Text files ---
-    for txt_file in TXT_DIR.glob("*.txt"):
-        loader = TextLoader(str(txt_file), encoding="utf-8")
-        docs = loader.load_and_split(text_splitter=text_splitter)
-        for d in docs:
-            d.metadata["source_file"] = txt_file.name
-        pages.extend(docs)
-
-    # --- Images ---
-    for img_file in IMG_DIR.glob("*.*"):
-        try:
-            loader = UnstructuredImageLoader(str(img_file))
-            docs = loader.load_and_split(text_splitter=text_splitter)
-            for d in docs:
-                d.metadata["source_file"] = img_file.name
-            pages.extend(docs)
-        except Exception as e:
-            print(f"Failed to load image {img_file}: {e}")
-
-    # --- Word documents ---
-    for doc_file in DOCX_DIR.glob("*.docx"):
-        loader = UnstructuredWordDocumentLoader(str(doc_file))
-        docs = loader.load_and_split(text_splitter=text_splitter)
-        for d in docs:
-            d.metadata["source_file"] = doc_file.name
-        pages.extend(docs)
-
-    print(f"Total chunks created: {len(pages)}")
-
-    # Deduplicate
+    # Deduplicate chunks
+    seen = set()
     unique_pages = []
-    seen_texts = set()
-    for page in pages:
-        if page.page_content not in seen_texts:
-            unique_pages.append(page)
-            seen_texts.add(page.page_content)
-    pages = unique_pages
-    print(f"Total unique chunks after deduplication: {len(pages)}")
+    for p in pages:
+        content_hash = hash(p.page_content)
+        if content_hash not in seen:
+            unique_pages.append(p)
+            seen.add(content_hash)
 
-    # Create Chroma DB
+    print(f"Total unique chunks after deduplication: {len(unique_pages)}")
+
     chroma_db = Chroma.from_documents(
-        documents=pages,
+        documents=unique_pages,
         embedding=embed_model,
         persist_directory=str(CHROMA_DB_DIR),
-        collection_name="document_collection"
+        collection_name="doc_collection",
     )
     print(f"Chroma DB created at {CHROMA_DB_DIR}")
 
 # -----------------------------
-# Setup retriever
+# Retriever and Prompt
 # -----------------------------
-retriever = chroma_db.as_retriever(
-    search_type="mmr",
-    search_kwargs={"k": 5},
-)
+retriever = chroma_db.as_retriever(search_type="mmr", search_kwargs={"k": 5})
 
-# -----------------------------
-# Setup Ollama chat model
-# -----------------------------
-llm = ChatOllama(model="llama2", temperature=0.2, max_tokens=600)
-
-# -----------------------------
-# Adaptive-length, source-aware prompt
-# -----------------------------
 qa_prompt = PromptTemplate(
     template="""
-Answer the following question using ONLY the context provided.
-Be concise: use 1–3 sentences for simple answers, up to 8 sentences for complex answers.
-Mention the source filename for each piece of information if possible.
-If the answer is not in the context, reply exactly with: I don't know
+You are a helpful assistant. Answer the question using ONLY the information provided in the context below.
+
+Guidelines:
+- Provide a coherent paragraph as the answer.
+- Always cite the source filename for each fact if available.
+- If the answer cannot be found in the context, respond exactly with: I don't know.
+- Do NOT use any outside knowledge.
 
 Context:
 {context}
 
-Question: {question}
+Question:
+{question}
 
 Answer:
 """,
     input_variables=["context", "question"],
 )
 
-# -----------------------------
-# Create RetrievalQA
-# -----------------------------
 retrievalQA = RetrievalQA.from_chain_type(
     llm=llm,
     retriever=retriever,
@@ -175,46 +138,26 @@ retrievalQA = RetrievalQA.from_chain_type(
     return_source_documents=True,
 )
 
-print("RetrievalQA ready ✅")
-
 # -----------------------------
-# Ask question
+# Query and Post-process
 # -----------------------------
-query = "where is rom dynamics located and what do they do?"
-print(f"\n❓Question: {query}")
+def ask_question(query: str):
+    ans = retrievalQA.invoke(query)
+    if isinstance(ans, dict) and "result" in ans:
+        ans_text = ans["result"].strip()
+        sources = [doc.metadata.get("source_file") for doc in ans.get("source_documents", [])]
+    else:
+        ans_text = str(ans).strip()
+        sources = []
 
-ans = retrievalQA.invoke(query)
+    if not ans_text or ans_text.lower() in ["", "none", "unknown"]:
+        ans_text = "I don't know"
 
-# -----------------------------
-# Post-process answer
-# -----------------------------
-if isinstance(ans, dict) and "result" in ans:
-    ans_text = ans["result"].strip()
-    sources = [doc.metadata.get("source_file") for doc in ans.get("source_documents", [])]
-else:
-    ans_text = str(ans).strip()
-    sources = []
+    paragraph = " ".join(ans_text.split())
+    print("\n📌 Answer:\n", paragraph)
+    if sources:
+        print("\n📂 Sources:", ", ".join(set(sources)))
 
-if not ans_text or ans_text.lower() in ["", "none", "unknown"]:
-    ans_text = "I don't know"
-
-# Keep up to 8 sentences
-sentences = re.split(r'(?<=[.!?]) +', ans_text.replace("\n", " "))
-seen = set()
-filtered_ans = []
-for s in sentences:
-    s = s.strip()
-    if s and s not in seen and s[-1] in ".!?":
-        filtered_ans.append(s)
-        seen.add(s)
-    if len(filtered_ans) >= 8:
-        break
-ans_text = " ".join(filtered_ans) if filtered_ans else ans_text
-
-print("\n📌RetrievalQA Answer:\n")
-print(ans_text)
-if sources:
-    print("\n📂Sources:")
-    print(", ".join(set(sources)))
-
+# Example usage
+ask_question("how much weight can kilobot carry")
 
