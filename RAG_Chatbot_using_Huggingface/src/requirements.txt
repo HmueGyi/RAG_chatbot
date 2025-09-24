@@ -8,3 +8,4 @@ langchain-huggingface>=0.0.6
 langchain-community>=0.0.10
 unstructured>=0.7.1
 python-docx>=0.8.11
+
