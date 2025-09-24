@@ -1,13 +1,11 @@
-pathlib
 langchain>=0.1.0
-transformers>=4.34.0
-chromadb>=0.3.32
-langchain-community>=0.0.7
-gradio>=3.40.0
-torch>=2.1.0
-accelerate
-pypdf
-langchain_ollama
+chromadb>=0.3.29
+langchain-ollama>=0.0.7
+langchain-community>=0.0.13
+unstructured>=0.8.0
+PyPDF2>=3.0.0
+python-magic>=0.4.27
+regex>=2023.10.22
 
 # ollama pull llama2
 # ollama pull nomic-embed-text
