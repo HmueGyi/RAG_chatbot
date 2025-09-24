@@ -149,14 +149,13 @@ llm_pipeline = pipeline(
     model="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     tokenizer=AutoTokenizer.from_pretrained("TinyLlama/TinyLlama-1.1B-Chat-v1.0"),
     trust_remote_code=True,
-    device_map="auto",
+    device= -1,  # Force CPU
     return_full_text=False,
-    temperature=0.2,             # slightly higher for complete answers
-    max_new_tokens=600,          # increase token limit
-    do_sample=True,              # allow sampling
+    temperature=0.2,
+    max_new_tokens=600,
+    do_sample=True,
     model_kwargs={
         "cache_dir": str(MODELS_CACHE_DIR),
-        "offload_folder": str(OFFLOAD_DIR),
     },
 )
 hf_llm = HuggingFacePipeline(pipeline=llm_pipeline)
