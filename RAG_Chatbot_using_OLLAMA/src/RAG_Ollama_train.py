@@ -2,8 +2,8 @@
 High-accuracy RAG Chatbot with Ollama:
 Load PDFs, text files, images, Word docs,
 create embeddings, store in Chroma DB,
-and query with Llama3.1 via Ollama.
-Source-aware and improved accuracy.
+and query with Llama2 via Ollama.
+Concise and exact answers without sources.
 """
 
 from pathlib import Path
@@ -35,9 +35,10 @@ CHROMA_DB_DIR = BASE_DIR / "chroma_db"
 # Text Splitter
 # -----------------------------
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1200,
-    chunk_overlap=100,
+    chunk_size=500,
+    chunk_overlap=50,
     length_function=len,
+    separators=["\n\n", "\n", ". "]
 )
 
 # -----------------------------
@@ -66,8 +67,6 @@ def load_documents():
                     continue
 
                 file_docs = loader.load_and_split(text_splitter=text_splitter)
-                for d in file_docs:
-                    d.metadata["source_file"] = file.name
                 docs.extend(file_docs)
             except Exception as e:
                 print(f"⚠️ Failed to load {dtype} {file.name}: {e}")
@@ -107,17 +106,23 @@ else:
 # -----------------------------
 # Retriever and Prompt
 # -----------------------------
-retriever = chroma_db.as_retriever(search_type="mmr", search_kwargs={"k": 5})
+# Use similarity search with a slightly higher k for more coverage
+retriever = chroma_db.as_retriever(
+    search_type="similarity",
+    search_kwargs={"k": 8}  # increased k to improve answer accuracy
+)
 
 qa_prompt = PromptTemplate(
     template="""
-You are a helpful assistant. Answer the question using ONLY the information provided in the context below.
+You are an expert assistant specialized in providing **accurate, concise, and fact-based answers**. 
+Answer the user's question using ONLY the information provided in the context. Do not use any prior knowledge or assumptions.
 
-Guidelines:
-- Provide a coherent paragraph as the answer.
-- Always cite the source filename for each fact if available.
-- If the answer cannot be found in the context, respond exactly with: I don't know.
-- Do NOT use any outside knowledge.
+Instructions:
+1. Read all context carefully and synthesize a single coherent paragraph as your answer.
+2. Always cite the source filename for each fact or statement if available.
+3. If the answer is not present in the context, respond exactly with: I don't know.
+4. Avoid adding any explanations, opinions, or content not supported by the context.
+5. If multiple context chunks contain conflicting information, prioritize the majority or clearly indicate uncertainty.
 
 Context:
 {context}
@@ -130,6 +135,7 @@ Answer:
     input_variables=["context", "question"],
 )
 
+
 retrievalQA = RetrievalQA.from_chain_type(
     llm=llm,
     retriever=retriever,
@@ -139,25 +145,32 @@ retrievalQA = RetrievalQA.from_chain_type(
 )
 
 # -----------------------------
-# Query and Post-process
+# Query Function with Verification
 # -----------------------------
 def ask_question(query: str):
-    ans = retrievalQA.invoke(query)
-    if isinstance(ans, dict) and "result" in ans:
-        ans_text = ans["result"].strip()
-        sources = [doc.metadata.get("source_file") for doc in ans.get("source_documents", [])]
+    result = retrievalQA.invoke(query)
+    
+    # Extract answer text
+    if isinstance(result, dict) and "result" in result:
+        answer_text = result["result"].strip()
     else:
-        ans_text = str(ans).strip()
-        sources = []
+        answer_text = str(result).strip()
+    
+    # Safety fallback
+    if not answer_text or answer_text.lower() in ["", "none", "unknown"]:
+        answer_text = "I don't know"
+    
+    # Clean formatting
+    answer_text = " ".join(answer_text.split())
+    
+    print("\n📌 Answer:\n", answer_text)
+    
+    # Optional: print sources
+    if isinstance(result, dict) and "source_documents" in result:
+        sources = {doc.metadata.get("source", "unknown") for doc in result["source_documents"]}
+        print("📂 Sources:", ", ".join(sources))
 
-    if not ans_text or ans_text.lower() in ["", "none", "unknown"]:
-        ans_text = "I don't know"
-
-    paragraph = " ".join(ans_text.split())
-    print("\n📌 Answer:\n", paragraph)
-    if sources:
-        print("\n📂 Sources:", ", ".join(set(sources)))
-
-# Example usage
-ask_question("how much weight can kilobot carry")
-
+# -----------------------------
+# Example Usage
+# -----------------------------
+ask_question("Who is U VanLar Lura")
