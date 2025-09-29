@@ -210,3 +210,4 @@ with gr.Blocks() as demo:
     mic.stop_recording(voice_to_chat, [mic, chatbot], [msg, chatbot, audio_output])
 
 demo.launch()
+
