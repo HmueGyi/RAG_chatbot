@@ -5,7 +5,8 @@ from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 from langchain_chroma import Chroma
 from langchain_ollama import ChatOllama, OllamaEmbeddings
-from gtts import gTTS
+# from gtts import gTTS
+from TTS.api import TTS
 import tempfile
 import base64
 
@@ -13,6 +14,7 @@ import base64
 # Whisper STT Model (CPU)
 # -----------------------------
 stt_model = whisper.load_model("medium", device="cpu")
+tts_model = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC", progress_bar=False, gpu=True)
 
 def transcribe_audio(audio_path):
     """
@@ -23,10 +25,11 @@ def transcribe_audio(audio_path):
     result = stt_model.transcribe(
         audio_path,
         language="my",
-        beam_size=1,
+        beam_size=5,
         temperature=0,
         fp16=False
     )
+
     return result["text"]
 
 
@@ -70,19 +73,20 @@ retriever = chroma_db.as_retriever(
 
 qa_prompt = PromptTemplate(
     template="""
-You are **SiSi**, a friendly and caring AI assistant.  
+You are **CiCi**, a friendly and caring AI assistant.  
 
 You handle three types of conversations:
 
 1. **Daily conversations**:  
    - Respond naturally and warmly.  
    - Keep replies short (1–2 sentences), direct, and human-like.  
-   - Stay consistent: you are not ChatGPT, Ollama, or Llama — only SiSi.  
+   - Stay consistent: you are not ChatGPT, Ollama, or Llama — only CiCi.
    - Never use filler phrases like "I'd be happy to help you" or "Sure, here you go."  
 
 2. **Knowledge/document questions**:  
    - Use ONLY the given context.  
-   - Answer concisely and factually (1–3 sentences).  
+   - If the question is a **wh-question** (who, what, when, where, why, how), provide a **detailed answer in 3–5 sentences**, explaining clearly and providing context from the documents.  
+   - For non-wh questions, answer concisely and factually (1–2 sentences).  
    - If the answer is not in the context → reply politely like:  
      "It seems like '<user question>' might be a person or topic, but I couldn't find any information in the context. If you could provide more details, I'd be happy to try to help further."  
    - Do not invent information.  
@@ -94,9 +98,12 @@ You handle three types of conversations:
        - Investments → just the investments.  
        - If nothing found → use the polite unknown message above.  
 
-Rules:   
-- Always stay friendly and helpful.  
+**General Rules:**   
+- Always stay friendly, clear, and helpful.  
 - Never invent details or use prior knowledge outside the context.  
+- Adjust answer length according to question type:
+    - Wh-questions → 3–5 sentences, detailed.
+    - Other questions → 1–2 sentences, concise.  
 
 Context:
 {context}
@@ -104,10 +111,11 @@ Context:
 Question:
 {question}
 
-Answer as SiSi:
+Answer as CiCi:
 """,
     input_variables=["context", "question"],
 )
+
 
 retrievalQA = RetrievalQA.from_chain_type(
     llm=llm,
@@ -153,106 +161,52 @@ def ask_question(query: str):
 
 
 # -----------------------------
-# Myanmar Name Phonetic Mapping
-# -----------------------------
-MYANMAR_TO_PHONETIC = {
-    "စိုး": "Soe", "မောင်": "Maung", "နောင်": "Naung", "ကောင်း " : "Kaung" ,"ထက် " : "Htet",
-    "ခိုင်": "Khine", "နေ": "Nay", "ထွန်း": "Htun", "ခန့်": "Khant",
-    "ဇော်": "Zaw", "စံ": "San", "မြင့်": "Myint", "ကျော်": "Kyaw",
-    "မင်း": "Min", "စန္ဒာ": "Sandar", "သန်း": "Than", "ဇေယျာ": "Zayar",
-    "အောင်": "Aung", "သိန်း": "Thein", "နီ": "Ni", "ညို": "Nyo",
-    "စိုးမောင်": "Soe Maung", "စိုးနောင်": "Soe Naung", "ပြည့်": "Pyae",
-    "ဦး": "U", "ဒေါ်": "Daw", "ဖျိုး": "Phyo", "သော်န်": "Thant",
-    "ခန့်": "Khant", "ဇင်": "Zin", "မေ": "Me", "လွင်": "Lwin",
-    "ဆွာ": "Swar", "သု": "Thu", "မြတ်": "Myat", "ခန့်": "Khant",
-    "မောင်မောင်": "Maung Maung", "ဝင်း": "Win", "စုံ": "Soan" , "စုံ": "Sone"
-}
-
-def convert_myanmar_to_phonetic(text):
-    """
-    Replace Myanmar names in the text with phonetic equivalents.
-    """
-    for my_name, phonetic in MYANMAR_TO_PHONETIC.items():
-        text = text.replace(my_name, phonetic)
-    return text
-
-
-# -----------------------------
 # Gradio UI
 # -----------------------------
-# ---------------- Placeholder functions ---------------- #
-def ask_question(user_msg):
-    return f"Echo: {user_msg}"  # Replace with your RAG/Ollama logic
-
-def convert_myanmar_to_phonetic(text):
-    return text  # Replace with your phonetic conversion logic
-
-def transcribe_audio(audio_path):
-    return "Transcribed text from audio"  # Replace with your STT logic
-
-# ---------------- Gradio Interface ---------------- #
 with gr.Blocks() as demo:
-    gr.Markdown("## 🎤 Voice-Enabled ChatGPT-Style RAG Chatbot")
+    gr.Markdown("## 🎤 Voice-Enabled RAG Chatbot (STT + Chroma + Ollama + TTS)")
 
-    # Chat display
-    chatbot = gr.Chatbot(elem_id="chatbot", label="Chat", type="messages")  # Use messages type
-
-    # User input row: text + mic
-    with gr.Row():
-        msg = gr.Textbox(
-            label="Type your question",
-            placeholder="Ask me anything...",
-            lines=1
-        )
-        mic = gr.Audio(
-            label="🎤 Speak Now",
-            type="filepath",  # record to file
-            streaming=False
-        )
-
-    # Audio output for TTS
+    chatbot = gr.Chatbot()
+    msg = gr.Textbox(label="Type your question or use microphone below")
+    mic = gr.Audio(sources=["microphone"], type="filepath", label="🎤 Speak Now")
     audio_output = gr.HTML()
 
-    # ---------------- Functions ---------------- #
+
     def respond(user_msg, chat_history):
         """
-        Handle user text, update chat, and generate TTS.
+        Respond to user input, update chat history, and generate TTS audio.
         """
         answer = ask_question(user_msg)
+        chat_history.append((user_msg, answer))
 
-        # ChatGPT-style message appending
-        chat_history.append({"role": "user", "content": user_msg})
-        chat_history.append({"role": "assistant", "content": answer})
+        # Convert Myanmar names to phonetic (optional, if needed)
+        tts_text = answer
 
-        # TTS conversion
-        tts_text = convert_myanmar_to_phonetic(answer)
-        tts = gTTS(text=tts_text, lang="en")
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmpfile:
-            tts.save(tmpfile.name)
+        # TTS with Coqui TTS
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmpfile:
+            tts_model.tts_to_file(text=tts_text, file_path=tmpfile.name)
             audio_path = tmpfile.name
 
-        # Convert MP3 to base64 for HTML audio
+        # Convert WAV to base64 for autoplay
         with open(audio_path, "rb") as f:
             audio_b64 = base64.b64encode(f.read()).decode()
+
         audio_player = f"""
-        <audio autoplay controls>
-            <source src="data:audio/mpeg;base64,{audio_b64}" type="audio/mpeg">
+        <audio autoplay>
+            <source src="data:audio/wav;base64,{audio_b64}" type="audio/wav">
         </audio>
         """
 
         return "", chat_history, audio_player
 
-    def voice_to_chat(audio_file, chat_history):
-        """
-        Transcribe audio and feed it to respond function.
-        """
-        if audio_file is None:
-            return "", chat_history, ""
-        user_msg = transcribe_audio(audio_file)
+    # Text input
+    msg.submit(respond, [msg, chatbot], [msg, chatbot, audio_output])
+
+    # Mic input → Transcribe → Feed to chatbot
+    def voice_to_chat(audio, chat_history):
+        user_msg = transcribe_audio(audio)
         return respond(user_msg, chat_history)
 
-    # ---------------- Event Bindings ---------------- #
-    msg.submit(respond, [msg, chatbot], [msg, chatbot, audio_output])
-    mic.change(voice_to_chat, [mic, chatbot], [msg, chatbot, audio_output])
+    mic.stop_recording(voice_to_chat, [mic, chatbot], [msg, chatbot, audio_output])
 
 demo.launch()

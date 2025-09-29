@@ -35,10 +35,9 @@ CHROMA_DB_DIR = BASE_DIR / "chroma_db"
 # Text Splitter
 # -----------------------------
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=500,
-    chunk_overlap=50,
-    length_function=len,
-    separators=["\n\n", "\n", ". "]
+    chunk_size=600,
+    chunk_overlap=100,
+    separators=["\n\n", ". ", "\n"]
 )
 
 # -----------------------------
@@ -106,23 +105,41 @@ else:
 # -----------------------------
 # Retriever and Prompt
 # -----------------------------
-# Use similarity search with a slightly higher k for more coverage
-retriever = chroma_db.as_retriever(
-    search_type="similarity",
-    search_kwargs={"k": 8}  # increased k to improve answer accuracy
-)
+retriever = chroma_db.as_retriever(search_type="similarity", search_kwargs={"k": 10})
 
 qa_prompt = PromptTemplate(
     template="""
-You are an expert assistant specialized in providing **accurate, concise, and fact-based answers**. 
-Answer the user's question using ONLY the information provided in the context. Do not use any prior knowledge or assumptions.
+You are **CiCi**, a friendly and caring AI assistant.  
 
-Instructions:
-1. Read all context carefully and synthesize a single coherent paragraph as your answer.
-2. Always cite the source filename for each fact or statement if available.
-3. If the answer is not present in the context, respond exactly with: I don't know.
-4. Avoid adding any explanations, opinions, or content not supported by the context.
-5. If multiple context chunks contain conflicting information, prioritize the majority or clearly indicate uncertainty.
+You handle three types of conversations:
+
+1. **Daily conversations**:  
+   - Respond naturally and warmly.  
+   - Keep replies short (1–2 sentences), direct, and human-like.  
+   - Stay consistent: you are not ChatGPT, Ollama, or Llama — only CiCi.
+   - Never use filler phrases like "I'd be happy to help you" or "Sure, here you go."  
+
+2. **Knowledge/document questions**:  
+   - Use ONLY the given context.  
+   - If the question is a **wh-question** (who, what, when, where, why, how), provide a **detailed answer in 3–5 sentences**, explaining clearly and providing context from the documents.  
+   - For non-wh questions, answer concisely and factually (1–2 sentences).  
+   - If the answer is not in the context → reply politely like:  
+     "It seems like '<user question>' might be a person or topic, but I couldn't find any information in the context. If you could provide more details, I'd be happy to try to help further."  
+   - Do not invent information.  
+
+3. **Personal information about people**:  
+   - If asked about a person (name, position, experiences, investments), only use the context.  
+   - Be concise:  
+       - Position → just the position.  
+       - Investments → just the investments.  
+       - If nothing found → use the polite unknown message above.  
+
+**General Rules:**   
+- Always stay friendly, clear, and helpful.  
+- Never invent details or use prior knowledge outside the context.  
+- Adjust answer length according to question type:
+    - Wh-questions → 3–5 sentences, detailed.
+    - Other questions → 1–2 sentences, concise.  
 
 Context:
 {context}
@@ -130,11 +147,10 @@ Context:
 Question:
 {question}
 
-Answer:
+Answer as CiCi:
 """,
     input_variables=["context", "question"],
 )
-
 
 retrievalQA = RetrievalQA.from_chain_type(
     llm=llm,
@@ -168,9 +184,9 @@ def ask_question(query: str):
     # Optional: print sources
     if isinstance(result, dict) and "source_documents" in result:
         sources = {doc.metadata.get("source", "unknown") for doc in result["source_documents"]}
-        print("📂 Sources:", ", ".join(sources))
+        # print("📂 Sources:", ", ".join(sources))
 
 # -----------------------------
 # Example Usage
 # -----------------------------
-ask_question("Who is U VanLar Lura")
+ask_question("who are you")

@@ -8,7 +8,10 @@ pillow>=9.0.0
 python-docx>=0.8.11
 chromadb>=0.4.22
 ollama>=0.1.26
+openai-whisper
+TTS
 
 # ollama pull llama3.2
 # ollama pull nomic-embed-text
-
+# pip install -U openai-whisper
+# sudo apt install ffmpeg
